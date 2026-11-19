@@ -1,33 +1,47 @@
-import os
 import json
-import pandas as pd
+import os
 import smtplib
-from email.mime.text import MIMEText
+import time
+from datetime import datetime
 from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import Callable, Optional
+
+import pandas as pd
 from dotenv import load_dotenv
 from groq import Groq
-from datetime import datetime
 
 # Load environment variables
 load_dotenv()
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-# SMTP Configuration
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-SENDER_EMAIL = os.getenv("SMTP_EMAIL")
-SENDER_PASSWORD = os.getenv("SMTP_PASSWORD")
-TEST_RECEIVER_EMAIL = "tu236661@gmail.com"  # All emails route here for testing
+DEFAULT_SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+DEFAULT_SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 
-def generate_messages(row):
+
+def get_groq_client(api_key: Optional[str] = None) -> Groq:
+    """Lazily initialize the Groq client."""
+    key = (api_key or os.getenv("GROQ_API_KEY") or "").strip()
+    if not key:
+        raise ValueError(
+            "GROQ_API_KEY is missing. Set it in your .env file, secrets, or UI."
+        )
+    return Groq(api_key=key)
+
+
+def generate_messages(
+    row: dict,
+    brand_context: str = "an AI-powered SaaS product",
+    model: str = "llama-3.3-70b-versatile",
+    client: Optional[Groq] = None,
+) -> tuple[str, str]:
     """Generates a personalized email pitch and Instagram DM using Groq."""
     prompt = f"""
-    You are a brand manager for an AI-powered SaaS product. Write two personalized outreach messages for a YouTube micro-influencer:
+    You are a brand manager for {brand_context}. Write two personalized outreach messages for a YouTube micro-influencer:
 
-    Influencer Name: {row['Name']}
-    Followers: {row['Followers']}
-    Content Themes: {row['Content Themes']}
-    Niche: {row['Refined Niche']}
+    Influencer Name: {row.get('Name', 'Creator')}
+    Followers: {row.get('Followers', 'N/A')}
+    Content Themes: {row.get('Content Themes', 'General Content')}
+    Niche: {row.get('Refined Niche', row.get('Category / Niche', 'Tech'))}
 
     Requirements:
     1. "email_body": A professional collaboration email pitch (60-90 words). Reference their niche and content themes naturally.
@@ -41,88 +55,194 @@ def generate_messages(row):
     """
 
     try:
-        response = client.chat.completions.create(
-            model="qwen/qwen3.8-27b",
+        active_client = client or get_groq_client()
+        response = active_client.chat.completions.create(
+            model=model,
             response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": "You are a professional outreach manager. Always output valid JSON only."},
-                {"role": "user", "content": prompt}
+                {
+                    "role": "system",
+                    "content": "You are a professional outreach manager. Always output valid JSON only.",
+                },
+                {"role": "user", "content": prompt},
             ],
-            temperature=0.7
+            temperature=0.7,
         )
         result = json.loads(response.choices[0].message.content)
-        return result.get("email_body", "Error generating email"), result.get("dm_body", "Error generating DM")
+        return (
+            result.get("email_body", "Error generating email"),
+            result.get("dm_body", "Error generating DM"),
+        )
     except Exception as e:
-        print(f"Error generating messages for {row['Name']}: {e}")
-        return "Error", "Error"
+        print(f"Error generating messages for {row.get('Name', 'Unknown')}: {e}")
+        return f"Error: {str(e)[:80]}", "Error"
 
-def send_email_smtp(influencer_name, subject, body):
-    """Sends the email using SMTP to the designated test inbox."""
-    if not SENDER_EMAIL or not SENDER_PASSWORD:
+
+def send_email_smtp(
+    influencer_name: str,
+    subject: str,
+    body: str,
+    recipient_email: str,
+    test_mode: bool = True,
+    sender_email: Optional[str] = None,
+    sender_password: Optional[str] = None,
+    smtp_server: str = DEFAULT_SMTP_SERVER,
+    smtp_port: int = DEFAULT_SMTP_PORT,
+) -> str:
+    """Sends an email using authenticated SMTP with STARTTLS."""
+    from_email = (sender_email or os.getenv("SMTP_EMAIL") or "").strip()
+    password = (sender_password or os.getenv("SMTP_PASSWORD") or "").strip()
+
+    if not from_email or not password:
         return "SMTP Credentials Missing"
 
-    msg = MIMEMultipart()
-    msg['From'] = SENDER_EMAIL
-    msg['To'] = TEST_RECEIVER_EMAIL
-    msg['Subject'] = subject
+    if not recipient_email or recipient_email == "Not Found":
+        return "Skipped (No Recipient Email)"
 
-    # Add a note to the body indicating who this was intended for
-    full_body = f"[TEST MODE - Intended for: {influencer_name}]\n\n{body}"
-    msg.attach(MIMEText(full_body, 'plain'))
+    msg = MIMEMultipart()
+    msg["From"] = from_email
+    msg["To"] = recipient_email
+    msg["Subject"] = subject
+
+    if test_mode:
+        full_body = f"[TEST MODE - Intended for: {influencer_name}]\n\n{body}"
+    else:
+        full_body = body
+
+    msg.attach(MIMEText(full_body, "plain"))
 
     try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(SENDER_EMAIL, SENDER_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-        return "Sent via SMTP"
+        with smtplib.SMTP(smtp_server, smtp_port, timeout=20) as server:
+            server.starttls()
+            server.login(from_email, password)
+            server.send_message(msg)
+        return "Sent via SMTP (Test Mode)" if test_mode else "Sent via SMTP (Live)"
     except Exception as e:
         return f"SMTP Error: {str(e)}"
 
-def process_and_send():
-    try:
-        df = pd.read_csv("qualified_influencers.csv")
-    except FileNotFoundError:
-        print("Error: qualified_influencers.csv not found. Run process_data.py first.")
-        return
 
-    # For safety while testing, limit to the first 5 records so you don't spam yourself with 46 emails at once
-    # Remove `.head(5)` to process the entire list
-    df = df.head(5)
-    
-    print(f"Generating and sending pitches for {len(df)} influencers to {TEST_RECEIVER_EMAIL}...\n")
-    tracker_log = []
+def process_and_send(
+    df: Optional[pd.DataFrame] = None,
+    input_csv: str = "qualified_influencers.csv",
+    output_csv: Optional[str] = "outreach_tracker.csv",
+    brand_context: str = "an AI-powered SaaS product",
+    subject_template: str = "Collaboration Opportunity: {name} x AI Startup",
+    model: str = "llama-3.3-70b-versatile",
+    limit: Optional[int] = 5,
+    mode: str = "test",  # "dry_run", "test", or "live"
+    test_receiver_email: Optional[str] = None,
+    groq_api_key: Optional[str] = None,
+    smtp_email: Optional[str] = None,
+    smtp_password: Optional[str] = None,
+    smtp_server: str = DEFAULT_SMTP_SERVER,
+    smtp_port: int = DEFAULT_SMTP_PORT,
+    delay_seconds: float = 1.0,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+) -> pd.DataFrame:
+    """Generate personalized copy and optionally dispatch via SMTP."""
+    if df is None:
+        if not os.path.exists(input_csv):
+            raise FileNotFoundError(
+                f"{input_csv} not found. Run process_data.py first."
+            )
+        df = pd.read_csv(input_csv)
 
-    for index, row in df.iterrows():
-        name = row['Name']
+    if limit and limit > 0:
+        df = df.head(limit).copy()
+    else:
+        df = df.copy()
+
+    groq_client = get_groq_client(groq_api_key)
+    resolved_test_email = (
+        test_receiver_email or os.getenv("TEST_RECEIVER_EMAIL") or ""
+    ).strip()
+
+    total = len(df)
+    tracker_log: list[dict] = []
+
+    for i, (_, row) in enumerate(df.iterrows(), start=1):
+        name = row.get("Name", "Creator")
         original_email = row.get("Contact Email", "Not Found")
+        if pd.isna(original_email) or not str(original_email).strip():
+            original_email = "Not Found"
 
-        # Generate personalized Email + DM
-        email_body, dm_body = generate_messages(row)
-        subject = f"Collaboration Opportunity: {name} x AI Startup"
+        email_body, dm_body = generate_messages(
+            row=row.to_dict(),
+            brand_context=brand_context,
+            model=model,
+            client=groq_client,
+        )
+        subject = subject_template.format(name=name)
 
-        # Execute SMTP Send
-        status = "Generated Only"
-        if email_body != "Error":
-             status = send_email_smtp(name, subject, email_body)
+        target_address = "N/A (Dry Run)"
+        if email_body.startswith("Error"):
+            status = "Generation Failed"
+        elif mode == "dry_run":
+            status = "Generated Only (Dry Run)"
+        elif mode == "test":
+            target_address = resolved_test_email
+            if not resolved_test_email:
+                status = "Test Receiver Email Missing"
+            else:
+                status = send_email_smtp(
+                    influencer_name=name,
+                    subject=subject,
+                    body=email_body,
+                    recipient_email=resolved_test_email,
+                    test_mode=True,
+                    sender_email=smtp_email,
+                    sender_password=smtp_password,
+                    smtp_server=smtp_server,
+                    smtp_port=smtp_port,
+                )
+        elif mode == "live":
+            target_address = original_email
+            status = send_email_smtp(
+                influencer_name=name,
+                subject=subject,
+                body=email_body,
+                recipient_email=original_email,
+                test_mode=False,
+                sender_email=smtp_email,
+                sender_password=smtp_password,
+                smtp_server=smtp_server,
+                smtp_port=smtp_port,
+            )
+        else:
+            status = f"Unknown Mode: {mode}"
 
-        print(f"[{index+1}/{len(df)}] {name} -> {status}")
+        if progress_callback:
+            progress_callback(i, total, f"[{i}/{total}] {name} -> {status}")
+        else:
+            print(f"[{i}/{total}] {name} -> {status}")
 
-        tracker_log.append({
-            "Influencer": name,
-            "Original Extracted Email": original_email,
-            "Test Delivery Address": TEST_RECEIVER_EMAIL,
-            "Email Pitch": email_body,
-            "Instagram DM": dm_body,
-            "Sent Status": status,
-            "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
+        tracker_log.append(
+            {
+                "Influencer": name,
+                "Original Extracted Email": original_email,
+                "Delivery Address": target_address,
+                "Subject": subject,
+                "Email Pitch": email_body,
+                "Instagram DM": dm_body,
+                "Sent Status": status,
+                "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
 
-    # Save Outreach Tracker
+        # Rate-limit delay between live/test SMTP sends
+        if mode in ("test", "live") and delay_seconds > 0 and i < total:
+            time.sleep(delay_seconds)
+
     tracker_df = pd.DataFrame(tracker_log)
-    tracker_df.to_csv("outreach_tracker.csv", index=False)
-    print(f"\nCompleted! Outreach log saved to outreach_tracker.csv.")
+    if output_csv:
+        tracker_df.to_csv(output_csv, index=False)
+        print(f"\nCompleted! Outreach log saved to {output_csv}.")
+
+    return tracker_df
+
 
 if __name__ == "__main__":
-    process_and_send()
+    default_mode = os.getenv("OUTREACH_MODE", "test")
+    default_limit = int(os.getenv("OUTREACH_LIMIT", "5"))
+    default_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    process_and_send(mode=default_mode, limit=default_limit, model=default_model)

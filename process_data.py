@@ -1,138 +1,197 @@
-import os
 import json
+import os
+import re
+from typing import Callable, Optional
+
 import pandas as pd
 from dotenv import load_dotenv
 from groq import Groq
-import re
 
 # Load environment variables
 load_dotenv()
 
-# Initialize the Groq client natively
-# Make sure GROQ_API_KEY is set in your .env file
-client = Groq(
-    api_key=os.getenv("GROQ_API_KEY")
-)
 
-def extract_email(text):
-    """Regex to find emails in the bio snippet."""
+def get_groq_client(api_key: Optional[str] = None) -> Groq:
+    """Initialize Groq client from argument or environment."""
+    key = (api_key or os.getenv("GROQ_API_KEY") or "").strip()
+    if not key:
+        raise ValueError(
+            "GROQ_API_KEY is missing. Set it in your .env file, secrets, or UI."
+        )
+    return Groq(api_key=key)
+
+
+def extract_email(text: str) -> str:
+    """Regex to find emails in text (bio snippet)."""
     if not text or pd.isna(text):
         return "Not Found"
-    
-    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-    match = re.search(email_pattern, text)
+
+    email_pattern = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
+    match = re.search(email_pattern, str(text))
     return match.group(0) if match else "Not Found"
 
-def enrich_and_classify_profile(bio, channel_name):
-    """Uses Groq (Llama 3.3 70B) natively to classify niche and extract themes."""
+
+def enrich_and_classify_profile(
+    bio: str,
+    channel_name: str,
+    target_niche_label: str = "Technology / Tech Reviews",
+    model: str = "llama-3.3-70b-versatile",
+    client: Optional[Groq] = None,
+) -> dict:
+    """Uses Groq natively to classify niche and extract themes."""
     if not bio or pd.isna(bio) or len(str(bio).strip()) < 10:
         return {
-            "Status": "Rejected", 
-            "Reason": "Bio too short or missing", 
-            "Niche": "Unknown", 
-            "Themes": "Unknown"
+            "Status": "Rejected",
+            "Reason": "Bio too short or missing (< 10 chars)",
+            "Niche": "Unknown",
+            "Themes": "Unknown",
         }
 
     prompt = f"""
     Analyze the following YouTube channel bio for '{channel_name}':
     "{bio}"
-    
+
     Tasks:
-    1. Determine if this channel fits the "Technology / Tech Reviews" niche. (True/False)
-    2. Extract 2-3 specific content themes (e.g., "Smartphones, PC Builds").
-    
-    Return ONLY a valid JSON object exactly matching this structure:
+    1. Determine if this channel fits the "{target_niche_label}" niche. (True/False)
+    2. Extract 2-3 specific content themes (e.g., "Smartphones, PC Builds, Audio Gear").
+    3. If not relevant, explain why in rejection_reason.
+
+    Return ONLY a valid JSON object matching this schema:
     {{
-        "is_tech_niche": true,
+        "is_niche_match": true,
         "content_themes": "string of themes",
         "rejection_reason": null
     }}
     """
 
     try:
-        response = client.chat.completions.create(
-            model="qwen/qwen3.8-27b",
+        active_client = client or get_groq_client()
+        # Use supported Groq models (default to llama-3.3-70b-versatile or qwen/qwen3.8-27b)
+        response = active_client.chat.completions.create(
+            model=model,
             response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": "You are a data enrichment assistant for influencer marketing. Output valid JSON only."},
-                {"role": "user", "content": prompt}
+                {
+                    "role": "system",
+                    "content": "You are a data enrichment assistant for influencer marketing. Output valid JSON only.",
+                },
+                {"role": "user", "content": prompt},
             ],
-            temperature=0.1
+            temperature=0.1,
         )
-        
+
         result = json.loads(response.choices[0].message.content)
-        
-        if result.get("is_tech_niche"):
+
+        is_match = result.get("is_niche_match") or result.get("is_tech_niche")
+        if is_match:
             return {
                 "Status": "Qualified",
                 "Reason": "Passed Niche Check",
-                "Niche": "Technology",
-                "Themes": result.get("content_themes", "Tech Hardware")
+                "Niche": target_niche_label.split("/")[0].strip(),
+                "Themes": result.get("content_themes") or "General Reviews",
             }
         else:
             return {
                 "Status": "Rejected",
-                "Reason": result.get("rejection_reason", "Not a tech channel"),
+                "Reason": result.get(
+                    "rejection_reason", f"Not in {target_niche_label}"
+                ),
                 "Niche": "Other",
-                "Themes": "N/A"
+                "Themes": "N/A",
             }
-            
+
     except Exception as e:
         print(f"Error enriching {channel_name}: {e}")
-        return {"Status": "Error", "Reason": "API Failure", "Niche": "Unknown", "Themes": "Unknown"}
+        return {
+            "Status": "Error",
+            "Reason": f"API Failure: {str(e)[:50]}",
+            "Niche": "Unknown",
+            "Themes": "Unknown",
+        }
 
-def process_dataset(input_csv="discovered_influencers.csv", output_csv="enriched_influencers.csv"):
-    try:
+
+def process_dataset(
+    df: Optional[pd.DataFrame] = None,
+    input_csv: str = "discovered_influencers.csv",
+    output_csv: str = "enriched_influencers.csv",
+    min_views_threshold: int = 300,
+    target_niche_label: str = "Technology / Tech Reviews",
+    model: str = "llama-3.3-70b-versatile",
+    groq_api_key: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Process influencers, apply engagement floor and LLM enrichment."""
+    if df is None:
+        if not os.path.exists(input_csv):
+            raise FileNotFoundError(f"{input_csv} not found. Run discovery first.")
         df = pd.read_csv(input_csv)
-    except FileNotFoundError:
-        print(f"Error: {input_csv} not found. Run discovery.py first.")
-        return
 
-    print(f"Processing {len(df)} profiles using Groq Llama 3.3...")
-    
+    total = len(df)
+    print(f"Processing {total} profiles using Groq ({model})...")
+
+    groq_client = get_groq_client(groq_api_key)
+
     statuses, reasons, niches, themes, emails = [], [], [], [], []
 
     for index, row in df.iterrows():
-        name = row['Name']
-        bio = row.get('Bio Snippet', '')
-        
-        # Basic view filter
-        if row.get('Avg Views/Video', 0) < 300:
-             statuses.append("Rejected")
-             reasons.append("Low average views (< 300)")
-             niches.append("Unknown")
-             themes.append("N/A")
-             emails.append(extract_email(bio))
-             print(f"[{index+1}/{len(df)}] {name} -> Rejected (Low Views)")
-             continue
-            
+        name = row.get("Name", "Unknown")
+        bio = row.get("Bio Snippet", "")
+        avg_views = row.get("Avg Views/Video", 0)
+
+        # Basic engagement floor filter
+        if pd.isna(avg_views) or avg_views < min_views_threshold:
+            statuses.append("Rejected")
+            reasons.append(f"Low average views (< {min_views_threshold})")
+            niches.append("Unknown")
+            themes.append("N/A")
+            emails.append(extract_email(bio))
+            if progress_callback:
+                progress_callback(
+                    index + 1, total, f"[{index+1}/{total}] {name} -> Rejected (Low Views)"
+                )
+            continue
+
         # AI Classification & Enrichment
-        ai_data = enrich_and_classify_profile(bio, name)
-        
+        ai_data = enrich_and_classify_profile(
+            bio=bio,
+            channel_name=name,
+            target_niche_label=target_niche_label,
+            model=model,
+            client=groq_client,
+        )
+
         statuses.append(ai_data["Status"])
         reasons.append(ai_data["Reason"])
         niches.append(ai_data["Niche"])
         themes.append(ai_data["Themes"])
         emails.append(extract_email(bio))
-        
-        print(f"[{index+1}/{len(df)}] {name} -> {ai_data['Status']}")
 
-    # Compile and save
-    df['Status'] = statuses
-    df['Rejection Reason'] = reasons
-    df['Refined Niche'] = niches
-    df['Content Themes'] = themes
-    df['Contact Email'] = emails
+        if progress_callback:
+            progress_callback(
+                index + 1, total, f"[{index+1}/{total}] {name} -> {ai_data['Status']}"
+            )
 
-    df.to_csv(output_csv, index=False)
-    
-    qualified_df = df[df['Status'] == 'Qualified'].copy()
-    qualified_df.to_csv("qualified_influencers.csv", index=False)
-    
-    print(f"\nProcessing complete!")
-    print(f"Total Profiles: {len(df)}")
-    print(f"Qualified Profiles: {len(qualified_df)}")
-    print(f"Data saved to {output_csv} and qualified_influencers.csv")
+    df["Status"] = statuses
+    df["Rejection Reason"] = reasons
+    df["Refined Niche"] = niches
+    df["Content Themes"] = themes
+    df["Contact Email"] = emails
+
+    if output_csv:
+        df.to_csv(output_csv, index=False)
+
+    qualified_df = df[df["Status"] == "Qualified"].copy()
+    if output_csv:
+        qualified_df.to_csv("qualified_influencers.csv", index=False)
+
+    return df, qualified_df
+
 
 if __name__ == "__main__":
-    process_dataset()
+    enriched_df, qualified_df = process_dataset()
+    print(f"\nProcessing complete!")
+    print(f"Total Profiles: {len(enriched_df)}")
+    print(f"Qualified Profiles: {len(qualified_df)}")
+    print(
+        "Data saved to enriched_influencers.csv and qualified_influencers.csv"
+    )

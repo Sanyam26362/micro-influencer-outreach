@@ -1,0 +1,64 @@
+name: Scheduled Influencer Outreach Pipeline
+
+on:
+  schedule:
+    # Runs every Monday at 09:00 UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      niche:
+        description: 'Target search niche'
+        required: true
+        default: 'tech reviews'
+      target_count:
+        description: 'Number of creators to find'
+        required: true
+        default: '25'
+      outreach_mode:
+        description: 'Outreach Mode (dry_run, test, live)'
+        required: true
+        default: 'test'
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Execute Discovery & Outreach Pipeline
+      env:
+        YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        SMTP_EMAIL: ${{ secrets.SMTP_EMAIL }}
+        SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        TEST_RECEIVER_EMAIL: ${{ secrets.TEST_RECEIVER_EMAIL }}
+        TARGET_NICHE: ${{ github.event.inputs.niche || 'tech reviews' }}
+        TARGET_COUNT: ${{ github.event.inputs.target_count || '25' }}
+        OUTREACH_MODE: ${{ github.event.inputs.outreach_mode || 'test' }}
+      run: |
+        python discovery.py
+        python process_data.py
+        python generate_and_send.py
+
+    - name: Archive Outreach Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: outreach-results
+        path: |
+          discovered_influencers.csv
+          enriched_influencers.csv
+          qualified_influencers.csv
+          outreach_tracker.csv

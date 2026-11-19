@@ -1,12 +1,14 @@
-# 🚀 Micro-Influencer Outreach Pipeline
+# 🚀 Micro-Influencer Outreach Pipeline & Web Dashboard
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-App-red.svg?logo=streamlit&logoColor=white)](https://streamlit.io/)
 [![YouTube API](https://img.shields.io/badge/YouTube%20Data%20API-v3-red.svg?logo=youtube&logoColor=white)](https://developers.google.com/youtube/v3)
-[![Groq AI](https://img.shields.io/badge/Groq%20Cloud-Llama%20%2F%20Qwen-orange.svg?logo=fastapi&logoColor=white)](https://groq.com/)
-[![Pandas](https://img.shields.io/badge/Data%20Engine-Pandas-150458.svg?logo=pandas&logoColor=white)](https://pandas.pydata.org/)
+[![Groq AI](https://img.shields.io/badge/Groq%20Cloud-Llama%203.3-orange.svg?logo=fastapi&logoColor=white)](https://groq.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 An end-to-end, automated intelligence and outreach system designed to discover high-affinity **YouTube micro-influencers (5,000 – 100,000 subscribers)**, qualify leads using **Groq-accelerated LLMs**, extract contact information, synthesize hyper-personalized multi-channel pitches (Email + Instagram DM), and dispatch outreach through an authenticated SMTP engine.
+
+Includes both an **interactive Web UI (`app.py`)** and headless **CLI scripts** ready for production cloud deployment.
 
 ---
 
@@ -16,17 +18,15 @@ An end-to-end, automated intelligence and outreach system designed to discover h
 - [System Architecture](#-system-architecture)
 - [Key Features](#-key-features)
 - [Repository Structure](#-repository-structure)
-- [Prerequisites](#-prerequisites)
-- [Installation & Setup](#-installation--setup)
-- [Environment Configuration](#-environment-configuration)
-- [Execution Pipeline](#-execution-pipeline)
-  - [Phase 1: Channel Discovery](#phase-1-channel-discovery-discoverypy)
-  - [Phase 2: AI Qualification & Enrichment](#phase-2-ai-qualification--enrichment-process_datapy)
-  - [Phase 3: Copy Synthesis & Outreach](#phase-3-copy-synthesis--outreach-generate_and_sendpy)
+- [Deployment Guide (Easiest Way)](#-deployment-guide)
+  - [Option 1: Streamlit Community Cloud (Recommended, 100% Free)](#option-1-streamlit-community-cloud-recommended)
+  - [Option 2: Docker Container](#option-2-docker-container)
+  - [Option 3: GitHub Actions (Automated Cron / Serverless)](#option-3-github-actions-serverless-cron)
+  - [Option 4: Render / Railway](#option-4-render--railway)
+- [Local Quickstart](#-local-quickstart)
+- [Execution Pipeline (CLI)](#-execution-pipeline-cli)
 - [Generated Artifacts & Schemas](#-generated-artifacts--schemas)
-- [Configuration & Customization](#-configuration--customization)
 - [Safety & Testing Guardrails](#-safety--testing-guardrails)
-- [License](#-license)
 
 ---
 
@@ -36,9 +36,9 @@ Micro-influencers boast significantly higher engagement rates, tighter niche tru
 
 This pipeline automates the complete lifecycle:
 1. **Targeted Scraping**: Queries the YouTube Data API v3 for targeted keywords, filters by subscriber brackets (5k–100k), and computes engagement metrics.
-2. **AI Vetting & Contact Extraction**: Employs regex pattern matching to extract business emails from bios and prompts Groq LLMs (`qwen/qwen3.8-27b`) with structured JSON schema outputs to verify niche alignment and identify 2–3 granular content themes.
+2. **AI Vetting & Contact Extraction**: Employs regex pattern matching to extract business emails from bios and prompts Groq LLMs (`llama-3.3-70b-versatile`) with structured JSON schema outputs to verify niche alignment and identify 2–3 granular content themes.
 3. **Hyper-Personalized Outreach**: Generates tailored email collaboration pitches (60–90 words) referencing the creator's exact themes, along with a companion Instagram/social direct message (15–30 words).
-4. **Automated Dispatch**: Sends outreach via SMTP (TLS) with safety test mode routing to audit outbound copy before live production deployment.
+4. **Automated Dispatch**: Sends outreach via SMTP (TLS) with dry-run and test mode routing to audit outbound copy before live production deployment.
 
 ---
 
@@ -57,39 +57,108 @@ flowchart TD
     G -- Yes --> I[Regex Email Extraction]
     I --> J[Groq LLM: Niche Classification & Theme Extraction]
     J --> K{Niche Verified?}
-    K -- No --> L[Status: Rejected - Not Tech Channel]
+    K -- No --> L[Status: Rejected - Not Target Niche]
     K -- Yes --> M[Status: Qualified]
     M --> N[(qualified_influencers.csv)]
     
     N --> O[generate_and_send.py]
     O --> P[Groq LLM: Generate Email Body & Social DM]
-    P --> Q[SMTP Dispatch via TLS]
-    Q --> R[(outreach_tracker.csv)]
+    P --> Q{Mode?}
+    Q -- Dry Run --> R1[Preview in UI / CSV]
+    Q -- Test Mode --> R2[Route to Test Inbox via SMTP]
+    Q -- Live Mode --> R3[Send to Influencer Email via SMTP]
+    R1 & R2 & R3 --> S[(outreach_tracker.csv)]
 ```
 
 ---
 
-## ✨ Key Features
+## 🌐 Deployment Guide
 
-- **Precision YouTube Discovery**:
-  - Automatically handles API pagination (`nextPageToken`).
-  - Pulls channel snippets and full channel statistics (`part="snippet,statistics"`).
-  - Strict micro-influencer bounds (5,000 to 100,000 subscribers) to avoid celebrity inflation and unengaged ghost accounts.
-  - Computes channel-level video engagement ratios (`Avg Views/Video = viewCount / videoCount`).
+### Option 1: Streamlit Community Cloud (Recommended)
+> **Why this is the easiest**: 100% Free, zero server setup, deploys directly from GitHub in 2 minutes with an interactive UI for demos and evaluators.
 
-- **Intelligent Qualification & Enrichment**:
-  - **Email Parsing**: Scans channel bio snippets using regex to extract contact details directly without manual copy-pasting.
-  - **Engagement Floor**: Automatically weeds out dead channels with an average view count lower than 300.
-  - **Structured JSON LLM Analysis**: Leverages Groq's high-speed inference engine with enforced JSON output to validate topical relevance and extract specific sub-themes (e.g., *"Smartphones, PC Builds, Audio Gear"*).
+1. **Push your code to GitHub**:
+   ```bash
+   git add .
+   git commit -m "Add Streamlit dashboard and deployment configs"
+   git push origin main
+   ```
+2. **Go to [share.streamlit.io](https://share.streamlit.io/)** and log in with GitHub.
+3. Click **"New App"**:
+   - **Repository**: `YourUsername/micro-influencer-outreach`
+   - **Branch**: `main`
+   - **Main file path**: `app.py`
+4. Click **"Advanced Settings"** ➔ **"Secrets"** and paste:
+   ```toml
+   YOUTUBE_API_KEY = "your_google_youtube_api_key"
+   GROQ_API_KEY = "your_groq_api_key"
+   SMTP_EMAIL = "your_email@gmail.com"
+   SMTP_PASSWORD = "your_16_char_app_password"
+   TEST_RECEIVER_EMAIL = "your_test_inbox@gmail.com"
+   ```
+5. Click **"Deploy!"** Your web dashboard is now live on a public URL (`https://<your-app>.streamlit.app`)!
 
-- **Multi-Channel Copy Generation**:
-  - **Tailored Email Pitch**: Formats professional, compelling 60–90 word collaboration pitches aligned with an AI SaaS product value proposition.
-  - **Companion Instagram DM**: Synthesizes a punchy 15–30 word follow-up message to boost response rates across channels.
+---
 
-- **Enterprise-Ready SMTP & Delivery Auditing**:
-  - Authenticated TLS email delivery via standard SMTP (`smtp.gmail.com:587`).
-  - **Built-in Test Mode Safeguard**: In test mode, all emails are routed to a verified test address with prefix metadata `[TEST MODE - Intended for: <Name>]`, preventing premature spam to prospect lists.
-  - Full audit logging: Persists every generated message, extracted email, and delivery status to `outreach_tracker.csv`.
+### Option 2: Docker Container
+To deploy locally or onto cloud instances (AWS EC2, GCP, Azure, DigitalOcean):
+
+```bash
+# 1. Build the Docker image
+docker build -t influencer-outreach .
+
+# 2. Run the container with environment variables
+docker run -p 8501:8501 --env-file .env influencer-outreach
+```
+Open `http://localhost:8501` in your browser.
+
+---
+
+### Option 3: GitHub Actions (Serverless Cron)
+If you want the pipeline to run headless on a schedule (e.g. every Monday at 9 AM UTC) without keeping any server on:
+
+1. In your GitHub repo, go to **Settings ➔ Secrets and variables ➔ Actions**.
+2. Add repository secrets: `YOUTUBE_API_KEY`, `GROQ_API_KEY`, `SMTP_EMAIL`, `SMTP_PASSWORD`, `TEST_RECEIVER_EMAIL`.
+3. The pipeline in `.github/workflows/scheduled_pipeline.yml` will automatically trigger weekly, or you can run it manually anytime via **Actions ➔ "Run workflow"**.
+4. Download the generated CSV outputs directly from the GitHub Actions Artifacts tab.
+
+---
+
+### Option 4: Render / Railway
+1. Sign up at [Render.com](https://render.com/) or [Railway.app](https://railway.app/).
+2. Create a **New Web Service** pointing to your GitHub repository.
+3. It detects `Procfile` or `Dockerfile` automatically.
+4. Add your environment variables in the service dashboard settings.
+5. Deploy!
+
+---
+
+## 💻 Local Quickstart
+
+1. **Clone & enter**:
+   ```bash
+   git clone https://github.com/Sanyam26362/micro-influencer-outreach.git
+   cd micro-influencer-outreach
+   ```
+
+2. **Create virtual environment & install**:
+   ```bash
+   python -m venv venv
+   # On Windows:
+   .\venv\Scripts\Activate.ps1
+   # On macOS/Linux:
+   source venv/bin/activate
+
+   pip install -r requirements.txt
+   ```
+
+3. **Configure credentials**:
+   Copy `.env.example` to `.env` and fill in your keys.
+
+4. **Launch Web App**:
+   ```bash
+   streamlit run app.py
+   ```
 
 ---
 
@@ -97,164 +166,22 @@ flowchart TD
 
 ```text
 micro-influencer-outreach/
-├── .env.example              # Template for environment variables and API keys
-├── .gitignore                # Git ignore rules for venv, secrets, and CSV datasets
-├── discovery.py              # Phase 1: YouTube API search, subscriber filter, CSV export
-├── process_data.py           # Phase 2: Engagement threshold, email regex, Groq classification
-├── generate_and_send.py      # Phase 3: Personalized pitch synthesis and SMTP delivery
-├── requirements.txt          # Python dependency specifications
-└── README.md                 # Project documentation and pipeline guide
-```
-
----
-
-## ⚙️ Prerequisites
-
-1. **Python 3.10+** installed on your system.
-2. **Google Cloud Console Account**: Enable **YouTube Data API v3** and generate an API key.
-3. **Groq Cloud Account**: Create an API key at [console.groq.com](https://console.groq.com/).
-4. **Gmail Account with App Password** (or any custom SMTP server):
-   - Navigate to [Google Account Security](https://myaccount.google.com/security).
-   - Enable 2-Step Verification.
-   - Generate a 16-character [App Password](https://myaccount.google.com/apppasswords) under "App passwords".
-
----
-
-## 📦 Installation & Setup
-
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/Sanyam26362/micro-influencer-outreach.git
-   cd micro-influencer-outreach
-   ```
-
-2. **Create and activate a virtual environment**:
-   - **Windows (PowerShell)**:
-     ```powershell
-     python -m venv venv
-     .\venv\Scripts\Activate.ps1
-     ```
-   - **macOS / Linux**:
-     ```bash
-     python3 -m venv venv
-     source venv/bin/activate
-     ```
-
-3. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
----
-
-## 🔑 Environment Configuration
-
-Copy the example environment file and populate your credentials:
-
-```bash
-cp .env.example .env
-```
-
-Open `.env` in your text editor and fill in your values:
-
-```env
-# Google YouTube Data API v3 Key
-YOUTUBE_API_KEY=AIzaSy...
-
-# Groq Cloud API Key
-GROQ_API_KEY=gsk_...
-
-# SMTP Credentials for Email Dispatch
-SMTP_EMAIL=your_email@gmail.com
-SMTP_PASSWORD=your_16_character_app_password
-```
-
-> [!WARNING]
-> Never commit your `.env` file or credentials to Git. The `.gitignore` file is preconfigured to prevent `.env` and all generated `*.csv` files from being tracked.
-
----
-
-## 🚀 Execution Pipeline
-
-The pipeline runs in three sequential phases:
-
-### Phase 1: Channel Discovery (`discovery.py`)
-
-Searches YouTube for micro-influencers matching your target query, collects channel metrics, filters by subscriber limits, and dumps candidate records to CSV.
-
-```bash
-python discovery.py
-```
-
-- **Default Query**: `"tech reviews"` (configurable in `discovery.py` via `target_niche`).
-- **Target Count**: 50 valid profiles (default).
-- **Output**: `discovered_influencers.csv`
-
-```text
-[Output Sample]
-Hunting for 50 'tech reviews' micro-influencers (5k-100k subs)...
-Current valid profiles: 18/50
-Current valid profiles: 35/50
-Current valid profiles: 50/50
-Success: Saved 50 qualified profiles to discovered_influencers.csv
-```
-
----
-
-### Phase 2: AI Qualification & Enrichment (`process_data.py`)
-
-Reads `discovered_influencers.csv`, evaluates channel engagement, extracts contact email addresses from the bio, and passes the profile to Groq's LLM to verify niche relevance and isolate key themes.
-
-```bash
-python process_data.py
-```
-
-- **Filter Rules**:
-  - Rejects profiles with `< 300` average views per video.
-  - Rejects bios under 10 characters.
-  - Discards channels rejected by the LLM classification prompt.
-- **Outputs**:
-  - `enriched_influencers.csv`: Full dataset with statuses and rejection reasons.
-  - `qualified_influencers.csv`: High-value subset ready for outreach.
-
-```text
-[Output Sample]
-Processing 50 profiles using Groq Llama 3.3...
-[1/50] ByteReview -> Qualified
-[2/50] DailyVlogs -> Rejected (Not a tech channel)
-[3/50] HardwareLab -> Qualified
-
-Processing complete!
-Total Profiles: 50
-Qualified Profiles: 38
-Data saved to enriched_influencers.csv and qualified_influencers.csv
-```
-
----
-
-### Phase 3: Copy Synthesis & Outreach (`generate_and_send.py`)
-
-Reads `qualified_influencers.csv`, generates custom email pitches and companion Instagram DMs using Groq, and dispatches the emails via SMTP.
-
-```bash
-python generate_and_send.py
-```
-
-- **Outreach Format**:
-  - **Email**: 60–90 words, structured pitch referencing the creator's content themes.
-  - **Social DM**: 15–30 words, casual follow-up touchpoint.
-- **Safety Batching**: Limits execution to the first 5 records by default (`df.head(5)`) for safe testing.
-- **Output**: `outreach_tracker.csv` logging all sent statuses and pitches.
-
-```text
-[Output Sample]
-Generating and sending pitches for 5 influencers to tu236661@gmail.com...
-
-[1/5] ByteReview -> Sent via SMTP
-[2/5] HardwareLab -> Sent via SMTP
-[3/5] TechUnbox -> Sent via SMTP
-
-Completed! Outreach log saved to outreach_tracker.csv.
+├── .github/
+│   └── workflows/
+│       └── scheduled_pipeline.yml  # Automated GitHub Actions workflow
+├── .streamlit/
+│   └── config.toml               # Streamlit theme and server configuration
+├── app.py                        # Interactive Streamlit Web Application
+├── discovery.py                  # Phase 1: YouTube API search & metrics extraction
+├── process_data.py               # Phase 2: Engagement check, email regex & Groq vetting
+├── generate_and_send.py          # Phase 3: Personalized copy synthesis & SMTP delivery
+├── Dockerfile                    # Containerization configuration
+├── .dockerignore                 # Exclusions for Docker build
+├── Procfile                      # Process configuration for Render / Railway
+├── requirements.txt              # Production dependency specifications
+├── .env.example                  # Template for API keys
+├── .gitignore                    # Git rules for secrets, venv, and CSVs
+└── README.md                     # Documentation & Deployment guide
 ```
 
 ---
@@ -263,58 +190,18 @@ Completed! Outreach log saved to outreach_tracker.csv.
 
 | File | Produced By | Description | Key Fields |
 |---|---|---|---|
-| `discovered_influencers.csv` | `discovery.py` | Raw discovered channels meeting subscriber criteria | `Name`, `Platform`, `Profile URL`, `Followers`, `Avg Views/Video`, `Category / Niche`, `Bio Snippet` |
+| `discovered_influencers.csv` | `discovery.py` | Raw channels meeting subscriber criteria | `Name`, `Platform`, `Profile URL`, `Followers`, `Avg Views/Video`, `Category / Niche`, `Bio Snippet` |
 | `enriched_influencers.csv` | `process_data.py` | Comprehensive dataset with AI audit trails | All discovery fields + `Status`, `Rejection Reason`, `Refined Niche`, `Content Themes`, `Contact Email` |
-| `qualified_influencers.csv` | `process_data.py` | Filtered list containing only `Status == 'Qualified'` leads | Clean subset used directly by copy generation |
-| `outreach_tracker.csv` | `generate_and_send.py` | Historical log of generated pitches and dispatch results | `Influencer`, `Original Extracted Email`, `Test Delivery Address`, `Email Pitch`, `Instagram DM`, `Sent Status`, `Date` |
-
----
-
-## 🛠️ Configuration & Customization
-
-### Changing the Target Niche
-In [discovery.py](file:///d:/projects/micro-influencer-outreach/discovery.py):
-```python
-if __name__ == "__main__":
-    target_niche = "fitness workout"  # Change to your desired niche
-    data = discover_micro_influencers(target_niche, target_count=50)
-```
-
-### Adjusting Subscriber Thresholds
-In [discovery.py](file:///d:/projects/micro-influencer-outreach/discovery.py#L50):
-```python
-# Adjust subscriber bounds (e.g., 10k to 50k)
-if 10000 <= sub_count <= 50000:
-    ...
-```
-
-### Switching LLM Models
-In [process_data.py](file:///d:/projects/micro-influencer-outreach/process_data.py#L54) and [generate_and_send.py](file:///d:/projects/micro-influencer-outreach/generate_and_send.py#L45):
-```python
-# Select any model supported by Groq Cloud (e.g., llama-3.3-70b-versatile, qwen/qwen3.8-27b)
-model = "llama-3.3-70b-versatile"
-```
-
-### Moving from Test Mode to Live Outreach
-In [generate_and_send.py](file:///d:/projects/micro-influencer-outreach/generate_and_send.py#L60-L75):
-1. In `send_email_smtp`, swap `msg['To'] = TEST_RECEIVER_EMAIL` to the influencer's verified email:
-   ```python
-   recipient = original_email if original_email != "Not Found" else TEST_RECEIVER_EMAIL
-   msg['To'] = recipient
-   ```
-2. Remove `.head(5)` in `process_and_send()` to process the full qualified dataset.
+| `qualified_influencers.csv` | `process_data.py` | Clean subset containing only `Status == 'Qualified'` leads | Clean subset used directly by copy generation |
+| `outreach_tracker.csv` | `generate_and_send.py` | Historical log of generated pitches and dispatch results | `Influencer`, `Original Extracted Email`, `Delivery Address`, `Subject`, `Email Pitch`, `Instagram DM`, `Sent Status`, `Date` |
 
 ---
 
 ## 🛡️ Safety & Testing Guardrails
 
-- **CAN-SPAM & Anti-Spam Compliance**:
-  - Always include valid business contact information and an unsubscribe link in cold email pitches.
-  - Never blast hundreds of emails in minutes. Introduce staggered rate limiting (`time.sleep`) when operating in live environments.
-- **Gmail SMTP Limits**:
-  - Standard Gmail accounts have a sending limit of ~500 emails/day (Google Workspace allows up to 2,000/day).
-- **Test Mode Protection**:
-  - The script defaults to routing messages to a designated developer test inbox (`TEST_RECEIVER_EMAIL`) so you can review copy fidelity before engaging real creators.
+- **Dry Run & Test Mode**: Prevent accidental spam by testing copy generation and routing all test emails to a dedicated tester inbox (`TEST_RECEIVER_EMAIL`) with a clear `[TEST MODE]` header prefix.
+- **Rate-Limiting**: Staggered sending interval (`time.sleep`) prevents SMTP spam flags and respects mail provider rate limits.
+- **Credentials Protection**: Never commit `.env` or credentials. All production deployments use environment variables or secret vaults.
 
 ---
 
