@@ -10,6 +10,8 @@ from groq import Groq
 # Load environment variables
 load_dotenv()
 
+FALLBACK_GROQ_MODELS = ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+
 
 def get_groq_client(api_key: Optional[str] = None) -> Groq:
     """Initialize Groq client from argument or environment."""
@@ -35,7 +37,7 @@ def enrich_and_classify_profile(
     bio: str,
     channel_name: str,
     target_niche_label: str = "Technology / Tech Reviews",
-    model: str = "llama-3.3-70b-versatile",
+    model: str = "qwen/qwen3.8-27b",
     client: Optional[Groq] = None,
 ) -> dict:
     """Uses Groq natively to classify niche and extract themes."""
@@ -66,19 +68,44 @@ def enrich_and_classify_profile(
 
     try:
         active_client = client or get_groq_client()
-        # Use supported Groq models (default to llama-3.3-70b-versatile or qwen/qwen3.8-27b)
-        response = active_client.chat.completions.create(
-            model=model,
-            response_format={"type": "json_object"},
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a data enrichment assistant for influencer marketing. Output valid JSON only.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,
-        )
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a data enrichment assistant for influencer marketing. Output valid JSON only.",
+            },
+            {"role": "user", "content": prompt},
+        ]
+
+        # Attempt with specified model, with automatic fallback if model doesn't exist
+        try:
+            response = active_client.chat.completions.create(
+                model=model,
+                response_format={"type": "json_object"},
+                messages=messages,
+                temperature=0.1,
+            )
+        except Exception as model_err:
+            err_msg = str(model_err).lower()
+            if "404" in err_msg or "model" in err_msg or "does not exist" in err_msg:
+                # Try fallback models
+                fallback_used = False
+                for fb in FALLBACK_GROQ_MODELS:
+                    if fb != model:
+                        try:
+                            response = active_client.chat.completions.create(
+                                model=fb,
+                                response_format={"type": "json_object"},
+                                messages=messages,
+                                temperature=0.1,
+                            )
+                            fallback_used = True
+                            break
+                        except Exception:
+                            continue
+                if not fallback_used:
+                    raise model_err
+            else:
+                raise model_err
 
         result = json.loads(response.choices[0].message.content)
 
@@ -88,7 +115,7 @@ def enrich_and_classify_profile(
                 "Status": "Qualified",
                 "Reason": "Passed Niche Check",
                 "Niche": target_niche_label.split("/")[0].strip(),
-                "Themes": result.get("content_themes") or "General Reviews",
+                "Themes": result.get("content_themes") or "General Tech Reviews",
             }
         else:
             return {
@@ -116,7 +143,7 @@ def process_dataset(
     output_csv: str = "enriched_influencers.csv",
     min_views_threshold: int = 300,
     target_niche_label: str = "Technology / Tech Reviews",
-    model: str = "llama-3.3-70b-versatile",
+    model: str = "qwen/qwen3.8-27b",
     groq_api_key: Optional[str] = None,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:

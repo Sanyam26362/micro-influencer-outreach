@@ -16,6 +16,7 @@ load_dotenv()
 
 DEFAULT_SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 DEFAULT_SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+FALLBACK_GROQ_MODELS = ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
 
 
 def get_groq_client(api_key: Optional[str] = None) -> Groq:
@@ -31,7 +32,7 @@ def get_groq_client(api_key: Optional[str] = None) -> Groq:
 def generate_messages(
     row: dict,
     brand_context: str = "an AI-powered SaaS product",
-    model: str = "llama-3.3-70b-versatile",
+    model: str = "qwen/qwen3.8-27b",
     client: Optional[Groq] = None,
 ) -> tuple[str, str]:
     """Generates a personalized email pitch and Instagram DM using Groq."""
@@ -56,18 +57,43 @@ def generate_messages(
 
     try:
         active_client = client or get_groq_client()
-        response = active_client.chat.completions.create(
-            model=model,
-            response_format={"type": "json_object"},
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a professional outreach manager. Always output valid JSON only.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.7,
-        )
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a professional outreach manager. Always output valid JSON only.",
+            },
+            {"role": "user", "content": prompt},
+        ]
+
+        try:
+            response = active_client.chat.completions.create(
+                model=model,
+                response_format={"type": "json_object"},
+                messages=messages,
+                temperature=0.7,
+            )
+        except Exception as model_err:
+            err_msg = str(model_err).lower()
+            if "404" in err_msg or "model" in err_msg or "does not exist" in err_msg:
+                fallback_used = False
+                for fb in FALLBACK_GROQ_MODELS:
+                    if fb != model:
+                        try:
+                            response = active_client.chat.completions.create(
+                                model=fb,
+                                response_format={"type": "json_object"},
+                                messages=messages,
+                                temperature=0.7,
+                            )
+                            fallback_used = True
+                            break
+                        except Exception:
+                            continue
+                if not fallback_used:
+                    raise model_err
+            else:
+                raise model_err
+
         result = json.loads(response.choices[0].message.content)
         return (
             result.get("email_body", "Error generating email"),
@@ -127,7 +153,7 @@ def process_and_send(
     output_csv: Optional[str] = "outreach_tracker.csv",
     brand_context: str = "an AI-powered SaaS product",
     subject_template: str = "Collaboration Opportunity: {name} x AI Startup",
-    model: str = "llama-3.3-70b-versatile",
+    model: str = "qwen/qwen3.8-27b",
     limit: Optional[int] = 5,
     mode: str = "test",  # "dry_run", "test", or "live"
     test_receiver_email: Optional[str] = None,
@@ -244,5 +270,5 @@ def process_and_send(
 if __name__ == "__main__":
     default_mode = os.getenv("OUTREACH_MODE", "test")
     default_limit = int(os.getenv("OUTREACH_LIMIT", "5"))
-    default_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    default_model = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
     process_and_send(mode=default_mode, limit=default_limit, model=default_model)

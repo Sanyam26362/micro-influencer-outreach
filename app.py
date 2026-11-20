@@ -3,9 +3,10 @@ import time
 from datetime import datetime
 import pandas as pd
 import streamlit as st
+from groq import Groq
 
 from discovery import discover_micro_influencers
-from process_data import process_dataset
+from process_data import process_dataset, extract_email
 from generate_and_send import (
     process_and_send,
     send_email_smtp,
@@ -39,18 +40,29 @@ st.markdown(
         height: 48px;
         font-weight: 600;
     }
-    .email-preview-box {
-        background-color: #f0f7ff;
-        border-left: 4px solid #1e88e5;
-        padding: 14px;
-        border-radius: 6px;
-        margin-top: 8px;
-        margin-bottom: 8px;
-    }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+# Helper function to dynamically list models supported by the user's Groq key
+def get_supported_groq_models(api_key: str) -> list[str]:
+    defaults = ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+    if not api_key:
+        return defaults
+    try:
+        client = Groq(api_key=api_key)
+        fetched = [
+            m.id
+            for m in client.models.list().data
+            if not m.id.startswith("whisper") and "guard" not in m.id
+        ]
+        if "qwen/qwen3.8-27b" in fetched:
+            fetched.remove("qwen/qwen3.8-27b")
+            fetched.insert(0, "qwen/qwen3.8-27b")
+        return fetched if fetched else defaults
+    except Exception:
+        return defaults
 
 # Session state initialization
 if "discovered_df" not in st.session_state:
@@ -122,7 +134,7 @@ with st.sidebar:
         "Groq Cloud API Key",
         value=default_groq,
         type="password",
-        help="Get from console.groq.com for ultra-fast Llama/Qwen inference.",
+        help="Get from console.groq.com. Uses qwen/qwen3.8-27b.",
     )
 
     with st.expander("📧 SMTP Email Settings", expanded=True):
@@ -174,7 +186,10 @@ with st.sidebar:
         - Dispatch: 🟢 Ready
         """
     )
-    st.caption("v1.1.0 • Interactive Email Dispatch Enabled")
+    st.caption("v1.2.0 • Qwen Engine & Direct Dispatch")
+
+# Fetch available models from Groq
+groq_models_list = get_supported_groq_models(groq_api_key.strip())
 
 # ---------------------------------------------------------
 # Main Page Header
@@ -328,8 +343,9 @@ with tab2:
         with q_col2:
             groq_model = st.selectbox(
                 "Groq LLM Model",
-                ["llama-3.3-70b-versatile", "qwen/qwen3.8-27b", "llama3-8b-8192", "mixtral-8x7b-32768"],
+                groq_models_list,
                 index=0,
+                help="Recommended: qwen/qwen3.8-27b (tested & reliable on Groq).",
             )
         with q_col3:
             target_niche_label = st.text_input(
@@ -351,7 +367,7 @@ with tab2:
                     q_bar.progress(min(cur / max(tot, 1), 1.0))
                     q_text.text(msg)
 
-                with st.spinner("Analyzing channel bios and themes with Groq LLM..."):
+                with st.spinner(f"Analyzing channel bios and themes with Groq ({groq_model})..."):
                     try:
                         enriched, qualified = process_dataset(
                             df=st.session_state.discovered_df.copy(),
@@ -364,9 +380,14 @@ with tab2:
                         st.session_state.enriched_df = enriched
                         st.session_state.qualified_df = qualified
                         q_bar.progress(1.0)
-                        q_text.success(
-                            f"✅ Vetting complete! {len(qualified)}/{len(enriched)} creators Qualified."
-                        )
+                        if len(qualified) > 0:
+                            q_text.success(
+                                f"✅ Vetting complete! {len(qualified)}/{len(enriched)} creators Qualified."
+                            )
+                        else:
+                            q_text.warning(
+                                f"⚠️ Vetting finished: 0/{len(enriched)} creators qualified. Check the 'Rejected Channels' tab for error details."
+                            )
                     except Exception as e:
                         st.error(f"Enrichment Error: {e}")
 
@@ -377,25 +398,29 @@ with tab2:
 
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Total Analyzed", len(en_df))
-            c2.metric("Qualified Leads", len(qu_df), delta=f"{len(qu_df)/len(en_df)*100:.1f}%")
+            pct_qual = f"{len(qu_df)/len(en_df)*100:.1f}%" if len(en_df) > 0 else "0%"
+            c2.metric("Qualified Leads", len(qu_df), delta=pct_qual)
             emails_found = en_df[en_df["Contact Email"] != "Not Found"]
             c3.metric("Emails Extracted", len(emails_found))
             rejected_count = len(en_df) - len(qu_df)
-            c4.metric("Rejected Channels", rejected_count)
+            c4.metric("Rejected / Errors", rejected_count)
 
             sub_tab1, sub_tab2 = st.tabs(["✅ Qualified Leads", "❌ Rejected Channels"])
             with sub_tab1:
-                st.dataframe(
-                    qu_df[["Name", "Followers", "Avg Views/Video", "Content Themes", "Contact Email", "Profile URL"]],
-                    use_container_width=True,
-                    column_config={"Profile URL": st.column_config.LinkColumn("YouTube")},
-                )
-                st.download_button(
-                    "📥 Download qualified_influencers.csv",
-                    data=qu_df.to_csv(index=False).encode("utf-8"),
-                    file_name="qualified_influencers.csv",
-                    mime="text/csv",
-                )
+                if not qu_df.empty:
+                    st.dataframe(
+                        qu_df[["Name", "Followers", "Avg Views/Video", "Content Themes", "Contact Email", "Profile URL"]],
+                        use_container_width=True,
+                        column_config={"Profile URL": st.column_config.LinkColumn("YouTube")},
+                    )
+                    st.download_button(
+                        "📥 Download qualified_influencers.csv",
+                        data=qu_df.to_csv(index=False).encode("utf-8"),
+                        file_name="qualified_influencers.csv",
+                        mime="text/csv",
+                    )
+                else:
+                    st.warning("No qualified creators found yet. Check the 'Rejected Channels' tab to see why they failed.")
             with sub_tab2:
                 rej_df = en_df[en_df["Status"] != "Qualified"]
                 st.dataframe(
@@ -414,9 +439,68 @@ with tab3:
         "along with punchy companion Instagram DMs (15–30 words), and sends them via SMTP."
     )
 
+    # Direct Manual Email Dispatcher expander (Always available regardless of pipeline state)
+    with st.expander("✉️ Direct Quick Email Sender (Send Any Email Now)", expanded=False):
+        d_col1, d_col2 = st.columns(2)
+        with d_col1:
+            direct_recipient = st.text_input("Send To:", value=test_receiver_email.strip())
+            direct_subj = st.text_input("Subject:", value="Collaboration Inquiry - Tech Creator Partnership")
+        with d_col2:
+            direct_name = st.text_input("Creator / Recipient Name:", value="Creator")
+        
+        direct_body = st.text_area(
+            "Email Message Body:",
+            value="Hi there,\n\nI really enjoy your tech reviews and breakdown videos. We have built an AI-powered SaaS tool that helps creators streamline production and would love to offer you a free premium tier.\n\nBest regards,\nPartnership Team",
+            height=120,
+        )
+        if st.button("📨 Send Direct Email Now", type="secondary"):
+            if not smtp_email.strip() or not smtp_password.strip():
+                st.error("❌ SMTP Sender Email or Gmail App Password is missing in sidebar.")
+            elif not direct_recipient.strip():
+                st.error("❌ Recipient email is required.")
+            else:
+                with st.spinner("Dispatching email..."):
+                    res = send_email_smtp(
+                        influencer_name=direct_name,
+                        subject=direct_subj,
+                        body=direct_body,
+                        recipient_email=direct_recipient.strip(),
+                        test_mode=False,
+                        sender_email=smtp_email.strip(),
+                        sender_password=smtp_password.strip(),
+                    )
+                    if "Sent via SMTP" in res:
+                        st.success(f"✅ Email successfully delivered to `{direct_recipient.strip()}`!")
+                    else:
+                        st.error(f"❌ {res}")
+
+    st.divider()
+
+    # Fallback / Shortcut if Phase 2 failed or has 0 qualified leads
     if st.session_state.qualified_df.empty:
-        st.info("ℹ️ Please run **Phase 2: AI Qualification** first or upload `qualified_influencers.csv` below.")
-        uploaded_qual = st.file_uploader("Upload qualified_influencers.csv", type=["csv"], key="upload_qual")
+        st.warning(
+            "⚠️ **No Qualified Creators Found in Phase 2.**\n\n"
+            "If you got `API Failure: Error code: 404`, it was because `llama-3.3-70b-versatile` was selected. "
+            "Please go back to **Tab 2**, select **`qwen/qwen3.8-27b`**, and re-run AI Qualification!"
+        )
+
+        if not st.session_state.discovered_df.empty:
+            st.info(
+                f"💡 **Shortcut**: You have **{len(st.session_state.discovered_df)} discovered channels** from Phase 1. "
+                "Click the button below to promote them directly to Qualified Leads and generate/send emails immediately!"
+            )
+            if st.button("⚡ Promote Discovered Creators Directly to Outreach (Bypass Vetting)", type="primary"):
+                promoted = st.session_state.discovered_df.copy()
+                promoted["Status"] = "Qualified"
+                promoted["Refined Niche"] = promoted.get("Category / Niche", "Technology")
+                promoted["Content Themes"] = "Tech Hardware, Gadgets & Consumer Electronics"
+                promoted["Contact Email"] = promoted["Bio Snippet"].apply(extract_email)
+                st.session_state.qualified_df = promoted
+                promoted.to_csv("qualified_influencers.csv", index=False)
+                st.success("✅ Promoted all discovered creators to Qualified! Re-opening Outreach options...")
+                st.rerun()
+
+        uploaded_qual = st.file_uploader("Or upload qualified_influencers.csv", type=["csv"], key="upload_qual")
         if uploaded_qual:
             st.session_state.qualified_df = pd.read_csv(uploaded_qual)
             st.rerun()
@@ -454,7 +538,7 @@ with tab3:
             )
             llm_copy_model = st.selectbox(
                 "Copy Synthesis Model",
-                ["llama-3.3-70b-versatile", "qwen/qwen3.8-27b", "llama3-8b-8192"],
+                groq_models_list,
                 index=0,
                 key="copy_model",
             )
