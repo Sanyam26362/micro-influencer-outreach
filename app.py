@@ -6,7 +6,12 @@ import streamlit as st
 
 from discovery import discover_micro_influencers
 from process_data import process_dataset
-from generate_and_send import process_and_send
+from generate_and_send import (
+    process_and_send,
+    send_email_smtp,
+    generate_messages,
+    get_groq_client,
+)
 
 # Page configuration
 st.set_page_config(
@@ -33,6 +38,14 @@ st.markdown(
     .stTabs [data-baseweb="tab"] {
         height: 48px;
         font-weight: 600;
+    }
+    .email-preview-box {
+        background-color: #f0f7ff;
+        border-left: 4px solid #1e88e5;
+        padding: 14px;
+        border-radius: 6px;
+        margin-top: 8px;
+        margin-bottom: 8px;
     }
     </style>
     """,
@@ -112,7 +125,7 @@ with st.sidebar:
         help="Get from console.groq.com for ultra-fast Llama/Qwen inference.",
     )
 
-    with st.expander("📧 SMTP Email Settings", expanded=False):
+    with st.expander("📧 SMTP Email Settings", expanded=True):
         smtp_email = st.text_input(
             "Sender Email (Gmail)",
             value=default_smtp_email,
@@ -130,6 +143,28 @@ with st.sidebar:
             help="All test emails will be safely routed here.",
         )
 
+        test_smtp_btn = st.button("🧪 Send Test Email (Verify SMTP)", use_container_width=True)
+        if test_smtp_btn:
+            if not smtp_email.strip() or not smtp_password.strip():
+                st.error("Sender email and App Password are required.")
+            elif not test_receiver_email.strip():
+                st.error("Test receiver email is required.")
+            else:
+                with st.spinner("Connecting to smtp.gmail.com:587 with STARTTLS..."):
+                    res = send_email_smtp(
+                        influencer_name="Admin Test",
+                        subject="SMTP Handshake Test - Micro-Influencer Pipeline",
+                        body="This is an automated verification test confirming your Gmail SMTP credentials and STARTTLS handshake are functioning properly.",
+                        recipient_email=test_receiver_email.strip(),
+                        test_mode=True,
+                        sender_email=smtp_email.strip(),
+                        sender_password=smtp_password.strip(),
+                    )
+                    if "Sent via SMTP" in res:
+                        st.success(f"✅ Handshake verified! Email sent to `{test_receiver_email.strip()}`")
+                    else:
+                        st.error(f"❌ {res}")
+
     st.divider()
     st.markdown(
         """
@@ -139,7 +174,7 @@ with st.sidebar:
         - Dispatch: 🟢 Ready
         """
     )
-    st.caption("v1.0.0 • Production Ready")
+    st.caption("v1.1.0 • Interactive Email Dispatch Enabled")
 
 # ---------------------------------------------------------
 # Main Page Header
@@ -389,14 +424,14 @@ with tab3:
         out_col1, out_col2 = st.columns([1, 1])
         with out_col1:
             outreach_mode = st.radio(
-                "Execution Mode",
-                options=["dry_run", "test", "live"],
+                "Default Outreach Mode",
+                options=["test", "live", "dry_run"],
                 format_func=lambda x: {
-                    "dry_run": "🛡️ Dry Run (Generate copy only, do NOT send emails)",
-                    "test": f"🧪 Test Mode (Send emails safely to: {test_receiver_email or 'Test Inbox'})",
-                    "live": "🚀 Live Mode (Send directly to extracted creator emails)",
+                    "test": f"🧪 Test Mode (Safely routes emails to: {test_receiver_email or 'Test Inbox'})",
+                    "live": "🚀 Live Mode (Sends directly to each creator's extracted email address)",
+                    "dry_run": "🛡️ Dry Run / Preview Only (Generates copy without sending emails)",
                 }[x],
-                help="Dry run preview copy; test mode audits deliverability without emailing creators; live mode sends to real creators.",
+                help="Test mode lets you verify email deliverability safely. Live mode delivers to real creator inboxes.",
             )
             brand_context = st.text_area(
                 "Brand / Product Value Proposition",
@@ -410,7 +445,7 @@ with tab3:
                 min_value=1,
                 max_value=len(st.session_state.qualified_df),
                 value=min(5, len(st.session_state.qualified_df)),
-                help="Process the first N qualified influencers (great for testing).",
+                help="Number of qualified influencers to generate copy for.",
             )
             email_subject_template = st.text_input(
                 "Email Subject Line Template",
@@ -424,15 +459,31 @@ with tab3:
                 key="copy_model",
             )
 
-        run_outreach = st.button("✉️ Generate Pitches & Dispatch", type="primary", use_container_width=True)
+        col_btn1, col_btn2 = st.columns([1, 1])
+        with col_btn1:
+            run_batch_btn = st.button(
+                "🚀 Generate & Send Batch Now",
+                type="primary",
+                use_container_width=True,
+                help="Generates pitches and sends emails for the entire batch according to selected mode.",
+            )
+        with col_btn2:
+            run_preview_only_btn = st.button(
+                "📝 Generate Copy Only (Preview Without Sending)",
+                use_container_width=True,
+                help="Only generates the email pitches and DMs so you can inspect/edit before sending.",
+            )
 
-        if run_outreach:
+        # Trigger batch generation & optional sending
+        if run_batch_btn or run_preview_only_btn:
+            selected_mode = "dry_run" if run_preview_only_btn else outreach_mode
+
             if not groq_api_key.strip():
-                st.error("❌ Groq API Key is missing.")
-            elif outreach_mode in ("test", "live") and (not smtp_email.strip() or not smtp_password.strip()):
-                st.error("❌ SMTP Sender Email or Password missing for email sending. Fill in sidebar.")
-            elif outreach_mode == "test" and not test_receiver_email.strip():
-                st.error("❌ Test Receiver Email is missing. Fill in sidebar.")
+                st.error("❌ Groq API Key is missing. Enter it in the sidebar.")
+            elif selected_mode in ("test", "live") and (not smtp_email.strip() or not smtp_password.strip()):
+                st.error("❌ SMTP Sender Email or Gmail App Password is missing in the sidebar.")
+            elif selected_mode == "test" and not test_receiver_email.strip():
+                st.error("❌ Test Mode Receiver Email is missing in the sidebar.")
             else:
                 o_bar = st.progress(0.0)
                 o_text = st.empty()
@@ -441,7 +492,8 @@ with tab3:
                     o_bar.progress(min(c / max(t, 1), 1.0))
                     o_text.text(m)
 
-                with st.spinner("Generating personalized pitches & dispatching..."):
+                action_desc = "Generating copy..." if selected_mode == "dry_run" else f"Generating & sending via SMTP ({selected_mode} mode)..."
+                with st.spinner(action_desc):
                     try:
                         tracker_result = process_and_send(
                             df=st.session_state.qualified_df.copy(),
@@ -449,7 +501,7 @@ with tab3:
                             subject_template=email_subject_template,
                             model=llm_copy_model,
                             limit=int(outreach_batch_limit),
-                            mode=outreach_mode,
+                            mode=selected_mode,
                             test_receiver_email=test_receiver_email.strip(),
                             groq_api_key=groq_api_key.strip(),
                             smtp_email=smtp_email.strip(),
@@ -459,27 +511,131 @@ with tab3:
                         )
                         st.session_state.tracker_df = tracker_result
                         o_bar.progress(1.0)
-                        o_text.success("🎉 Outreach batch executed successfully!")
+                        if selected_mode == "dry_run":
+                            o_text.success("✅ Copy generated! You can now review and send individual emails below.")
+                        else:
+                            o_text.success(f"🎉 Batch dispatched! Mode: {selected_mode.upper()}")
                     except Exception as e:
                         st.error(f"Outreach Error: {e}")
 
+        # -----------------------------------------------------
+        # INDIVIDUAL EMAIL INSPECTION & 1-CLICK SEND OPTION
+        # -----------------------------------------------------
         if not st.session_state.tracker_df.empty:
             st.divider()
-            st.subheader("Generated Copy & Delivery Audit")
-            t_df = st.session_state.tracker_df
+            st.subheader("📬 Review & Send Emails to Creators")
+            st.markdown(
+                "You can review each synthesized pitch, edit the recipient or subject, and click **'Send Email Now'** to deliver it directly!"
+            )
 
-            for idx, r in t_df.iterrows():
-                with st.expander(f"👤 {r['Influencer']} — Status: {r['Sent Status']}"):
-                    ecol1, ecol2 = st.columns([2, 1])
-                    with ecol1:
-                        st.markdown(f"**Subject:** `{r['Subject']}`")
-                        st.markdown(f"**Target Address:** `{r['Delivery Address']}` (Extracted: `{r['Original Extracted Email']}`)")
-                        st.markdown("**Personalized Email Pitch (60–90 words):**")
-                        st.info(r['Email Pitch'])
-                    with ecol2:
-                        st.markdown("**Companion Instagram DM (15–30 words):**")
-                        st.success(r['Instagram DM'])
-                        st.caption(f"Logged at: {r['Date']}")
+            # Global batch send button for all previewed emails
+            send_all_col1, send_all_col2 = st.columns([2, 1])
+            with send_all_col1:
+                st.caption(f"Currently viewing {len(st.session_state.tracker_df)} generated pitches.")
+            with send_all_col2:
+                if st.button("📨 Send All Pending Emails via SMTP", use_container_width=True):
+                    if not smtp_email.strip() or not smtp_password.strip():
+                        st.error("❌ SMTP credentials missing in sidebar.")
+                    else:
+                        send_progress = st.progress(0.0)
+                        for s_idx, s_row in st.session_state.tracker_df.iterrows():
+                            # Determine destination email
+                            dest_email = s_row["Original Extracted Email"]
+                            is_test = (outreach_mode == "test") or (dest_email == "Not Found")
+                            final_to = test_receiver_email.strip() if is_test else dest_email
+
+                            res_status = send_email_smtp(
+                                influencer_name=s_row["Influencer"],
+                                subject=s_row["Subject"],
+                                body=s_row["Email Pitch"],
+                                recipient_email=final_to,
+                                test_mode=is_test,
+                                sender_email=smtp_email.strip(),
+                                sender_password=smtp_password.strip(),
+                            )
+                            st.session_state.tracker_df.at[s_idx, "Sent Status"] = res_status
+                            st.session_state.tracker_df.at[s_idx, "Delivery Address"] = final_to
+                            send_progress.progress((s_idx + 1) / len(st.session_state.tracker_df))
+                            time.sleep(0.5)
+
+                        st.session_state.tracker_df.to_csv("outreach_tracker.csv", index=False)
+                        st.success("✅ All emails have been processed via SMTP!")
+                        st.rerun()
+
+            for idx, r in st.session_state.tracker_df.iterrows():
+                card_title = f"👤 {r['Influencer']} — Status: {r['Sent Status']}"
+                with st.expander(card_title, expanded=(idx < 2)):
+                    col_lead, col_dm = st.columns([2, 1])
+
+                    with col_lead:
+                        default_to = (
+                            r["Original Extracted Email"]
+                            if r["Original Extracted Email"] != "Not Found"
+                            else test_receiver_email.strip()
+                        )
+                        target_to = st.text_input(
+                            f"Send Email To:",
+                            value=default_to,
+                            key=f"to_{idx}",
+                            help="Edit the destination email address.",
+                        )
+                        edit_subject = st.text_input(
+                            f"Subject Line:",
+                            value=r["Subject"],
+                            key=f"subj_{idx}",
+                        )
+                        edit_pitch = st.text_area(
+                            f"Personalized Email Pitch (Editable):",
+                            value=r["Email Pitch"],
+                            height=130,
+                            key=f"pitch_{idx}",
+                        )
+
+                        # Individual Send Mail Button
+                        send_single_btn = st.button(
+                            f"📨 Send Email to {r['Influencer']}",
+                            key=f"btn_send_{idx}",
+                            type="primary",
+                        )
+
+                        if send_single_btn:
+                            if not smtp_email.strip() or not smtp_password.strip():
+                                st.error("❌ Please provide Sender Email & App Password in the sidebar.")
+                            elif not target_to.strip() or target_to == "Not Found":
+                                st.error("❌ Recipient email address is missing.")
+                            else:
+                                with st.spinner(f"Sending email to {target_to}..."):
+                                    is_test_send = (target_to == test_receiver_email.strip())
+                                    send_result = send_email_smtp(
+                                        influencer_name=r["Influencer"],
+                                        subject=edit_subject,
+                                        body=edit_pitch,
+                                        recipient_email=target_to.strip(),
+                                        test_mode=is_test_send,
+                                        sender_email=smtp_email.strip(),
+                                        sender_password=smtp_password.strip(),
+                                    )
+                                    if "Sent via SMTP" in send_result:
+                                        st.success(f"✅ Email successfully delivered to `{target_to}`!")
+                                        st.session_state.tracker_df.at[idx, "Sent Status"] = send_result
+                                        st.session_state.tracker_df.at[idx, "Delivery Address"] = target_to.strip()
+                                        st.session_state.tracker_df.at[idx, "Subject"] = edit_subject
+                                        st.session_state.tracker_df.at[idx, "Email Pitch"] = edit_pitch
+                                        st.session_state.tracker_df.to_csv("outreach_tracker.csv", index=False)
+                                    else:
+                                        st.error(f"❌ Failed: {send_result}")
+
+                    with col_dm:
+                        st.markdown("**Companion Instagram DM:**")
+                        st.text_area(
+                            "Instagram DM (15-30 words)",
+                            value=r["Instagram DM"],
+                            height=100,
+                            key=f"dm_{idx}",
+                            disabled=True,
+                        )
+                        st.caption(f"📅 Logged: {r.get('Date', 'Today')}")
+                        st.caption(f"📍 Original Extracted Email: `{r['Original Extracted Email']}`")
 
 # ---------------------------------------------------------
 # TAB 4: Campaign Tracker & Audit Logs
