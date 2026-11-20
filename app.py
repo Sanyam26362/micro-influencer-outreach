@@ -14,6 +14,26 @@ from generate_and_send import (
     get_groq_client,
 )
 
+
+def normalize_tracker_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure tracker DataFrame always has the expected column names regardless of CSV version."""
+    # Handle old schema: 'Email' → 'Original Extracted Email'
+    if "Email" in df.columns and "Original Extracted Email" not in df.columns:
+        df = df.rename(columns={"Email": "Original Extracted Email"})
+    # Add missing columns with defaults
+    for col, default in [
+        ("Original Extracted Email", "Not Found"),
+        ("Delivery Address", "N/A"),
+        ("Subject", "Collaboration Opportunity"),
+        ("Email Pitch", ""),
+        ("Instagram DM", ""),
+        ("Sent Status", "Unknown"),
+        ("Date", ""),
+    ]:
+        if col not in df.columns:
+            df[col] = default
+    return df
+
 # Page configuration
 st.set_page_config(
     page_title="Micro-Influencer Outreach Pipeline",
@@ -85,7 +105,7 @@ if "qualified_df" not in st.session_state:
 
 if "tracker_df" not in st.session_state:
     if os.path.exists("outreach_tracker.csv"):
-        st.session_state.tracker_df = pd.read_csv("outreach_tracker.csv")
+        st.session_state.tracker_df = normalize_tracker_df(pd.read_csv("outreach_tracker.csv"))
     else:
         st.session_state.tracker_df = pd.DataFrame()
 
